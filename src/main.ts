@@ -32,6 +32,33 @@ function writeToTerminal(data: string) {
   });
 }
 
+let pendingOutput = "";
+let flushScheduled = false;
+let flushInProgress = false;
+
+function scheduleFlush() {
+  if (flushScheduled) return;
+  flushScheduled = true;
+
+  window.requestAnimationFrame(() => {
+    flushScheduled = false;
+    void flushOutput();
+  });
+}
+
+async function flushOutput() {
+  if (flushInProgress) return;
+  if (!pendingOutput) return;
+
+  flushInProgress = true;
+  const chunk = pendingOutput;
+  pendingOutput = "";
+  await writeToTerminal(chunk);
+  flushInProgress = false;
+
+  if (pendingOutput) scheduleFlush();
+}
+
 // Write data from the terminal to the pty
 function writeToPty(data: string) {
   void invoke("async_write_to_pty", {
@@ -53,7 +80,8 @@ fitTerminal();
 
 listen<string>("pty:data", async (event) => {
   if (event.payload) {
-    await writeToTerminal(event.payload);
+    pendingOutput += event.payload;
+    scheduleFlush();
   }
 }).catch((error) => {
   console.error("Error listening to pty:data:", error);
@@ -64,3 +92,15 @@ listen<string>("pty:error", (event) => {
 }).catch((error) => {
   console.error("Error listening to pty:error:", error);
 });
+
+async function initWebgl() {
+  try {
+    const mod = await import("@xterm/addon-webgl");
+    const webglAddon = new mod.WebglAddon();
+    term.loadAddon(webglAddon);
+  } catch (error) {
+    console.warn("WebGL addon unavailable, falling back to canvas:", error);
+  }
+}
+
+void initWebgl();
