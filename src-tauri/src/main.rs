@@ -15,7 +15,49 @@ struct AppState {
     pty_pair: Arc<AsyncMutex<PtyPair>>,
     writer: Arc<AsyncMutex<Box<dyn Write + Send>>>,
     reader: Arc<AsyncMutex<BufReader<Box<dyn Read + Send>>>>,
+    utf8_remainder: Arc<AsyncMutex<Vec<u8>>>,
 }
+
+fn decode_utf8_stream(buffer: &mut Vec<u8>) -> String {
+    let mut output = String::new();
+
+    loop {
+        if buffer.is_empty() {
+            break;
+        }
+
+        match std::str::from_utf8(buffer) {
+            Ok(valid) => {
+                output.push_str(valid);
+                buffer.clear();
+                break;
+            }
+            Err(err) => {
+                let valid_up_to = err.valid_up_to();
+
+                if valid_up_to > 0 {
+                    output.push_str(unsafe {
+                        std::str::from_utf8_unchecked(&buffer[..valid_up_to])
+                    });
+                }
+
+                match err.error_len() {
+                    Some(invalid_len) => {
+                        output.push('\u{FFFD}');
+                        buffer.drain(..valid_up_to + invalid_len);
+                    }
+                    None => {
+                        buffer.drain(..valid_up_to);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    output
+}
+
 #[tauri::command]
 // create a shell and add to it the $TERM env variable so we can use clear and other commands
 async fn async_create_shell(state: State<'_, AppState>) -> Result<(), String> {
@@ -50,36 +92,31 @@ async fn async_create_shell(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn async_write_to_pty(data: &str, state: State<'_, AppState>) -> Result<(), ()> {
-    write!(state.writer.lock().await, "{}", data).map_err(|_| ())
+async fn async_write_to_pty(data: &str, state: State<'_, AppState>) -> Result<(), String> {
+    write!(state.writer.lock().await, "{}", data).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn async_read_from_pty(state: State<'_, AppState>) -> Result<String, ()> {
+async fn async_read_from_pty(state: State<'_, AppState>) -> Result<String, String> {
     let mut reader = state.reader.lock().await;
-    let data = {
-        // Read all available text
-        let data = reader.fill_buf().map_err(|_| ())?;
+    let bytes = reader
+        .fill_buf()
+        .map_err(|e| e.to_string())?
+        .to_vec();
 
-        // Send the data to the webview if necessary
-        if data.len() > 0 {
-            std::str::from_utf8(data)
-                .map(|v| v.to_string())
-                .map_err(|_| ())?
-        } else {
-            String::new()
-        }
-    };
-
-    if !data.is_empty() {
-        reader.consume(data.len());
+    if bytes.is_empty() {
+        return Ok(String::new());
     }
 
-    Ok(data)
+    let mut utf8_remainder = state.utf8_remainder.lock().await;
+    utf8_remainder.extend_from_slice(&bytes);
+    reader.consume(bytes.len());
+
+    Ok(decode_utf8_stream(&mut utf8_remainder))
 }
 
 #[tauri::command]
-async fn async_resize_pty(rows: u16, cols: u16, state: State<'_, AppState>) -> Result<(), ()> {
+async fn async_resize_pty(rows: u16, cols: u16, state: State<'_, AppState>) -> Result<(), String> {
     state
         .pty_pair
         .lock()
@@ -90,7 +127,7 @@ async fn async_resize_pty(rows: u16, cols: u16, state: State<'_, AppState>) -> R
             cols,
             ..Default::default()
         })
-        .map_err(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 fn main() {
@@ -114,6 +151,7 @@ fn main() {
             pty_pair: Arc::new(AsyncMutex::new(pty_pair)),
             writer: Arc::new(AsyncMutex::new(writer)),
             reader: Arc::new(AsyncMutex::new(BufReader::new(reader))),
+            utf8_remainder: Arc::new(AsyncMutex::new(Vec::new())),
         })
         .invoke_handler(tauri::generate_handler![
             async_write_to_pty,

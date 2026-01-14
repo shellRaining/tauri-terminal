@@ -51,7 +51,14 @@ addEventListener("resize", fitTerminal);
 fitTerminal();
 
 async function readFromPty() {
-  const data = await invoke<string>("async_read_from_pty");
+  let data: string | null = null;
+  try {
+    data = await invoke<string>("async_read_from_pty");
+  } catch (error) {
+    console.error("Error reading from pty:", error);
+    window.requestAnimationFrame(readFromPty);
+    return;
+  }
 
   if (data) {
     await writeToTerminal(data);
