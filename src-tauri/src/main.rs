@@ -23,7 +23,8 @@ async fn async_create_shell(state: State<'_, AppState>) -> Result<(), String> {
     let mut cmd = CommandBuilder::new("powershell.exe");
 
     #[cfg(not(target_os = "windows"))]
-    let mut cmd = CommandBuilder::new("bash");
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
+    let mut cmd = CommandBuilder::new(&shell);
 
     // add the $TERM env variable so we can use clear and other commands
 
@@ -54,23 +55,23 @@ async fn async_write_to_pty(data: &str, state: State<'_, AppState>) -> Result<()
 }
 
 #[tauri::command]
-async fn async_read_from_pty(state: State<'_, AppState>) -> Result<Option<String>, ()> {
+async fn async_read_from_pty(state: State<'_, AppState>) -> Result<String, ()> {
     let mut reader = state.reader.lock().await;
     let data = {
         // Read all available text
         let data = reader.fill_buf().map_err(|_| ())?;
 
-        // Send te data to the webview if necessary
+        // Send the data to the webview if necessary
         if data.len() > 0 {
             std::str::from_utf8(data)
-                .map(|v| Some(v.to_string()))
+                .map(|v| v.to_string())
                 .map_err(|_| ())?
         } else {
-            None
+            String::new()
         }
     };
 
-    if let Some(data) = &data {
+    if !data.is_empty() {
         reader.consume(data.len());
     }
 
