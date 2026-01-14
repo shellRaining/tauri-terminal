@@ -3,19 +3,17 @@
 
 use portable_pty::{native_pty_system, CommandBuilder, PtyPair, PtySize};
 use std::{
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufReader, Read, Write},
     process::exit,
     sync::Arc,
     thread::{self},
 };
 
-use tauri::{async_runtime::Mutex as AsyncMutex, State};
+use tauri::{async_runtime::Mutex as AsyncMutex, Emitter, Manager, State};
 
 struct AppState {
     pty_pair: Arc<AsyncMutex<PtyPair>>,
     writer: Arc<AsyncMutex<Box<dyn Write + Send>>>,
-    reader: Arc<AsyncMutex<BufReader<Box<dyn Read + Send>>>>,
-    utf8_remainder: Arc<AsyncMutex<Vec<u8>>>,
 }
 
 fn decode_utf8_stream(buffer: &mut Vec<u8>) -> String {
@@ -97,25 +95,6 @@ async fn async_write_to_pty(data: &str, state: State<'_, AppState>) -> Result<()
 }
 
 #[tauri::command]
-async fn async_read_from_pty(state: State<'_, AppState>) -> Result<String, String> {
-    let mut reader = state.reader.lock().await;
-    let bytes = reader
-        .fill_buf()
-        .map_err(|e| e.to_string())?
-        .to_vec();
-
-    if bytes.is_empty() {
-        return Ok(String::new());
-    }
-
-    let mut utf8_remainder = state.utf8_remainder.lock().await;
-    utf8_remainder.extend_from_slice(&bytes);
-    reader.consume(bytes.len());
-
-    Ok(decode_utf8_stream(&mut utf8_remainder))
-}
-
-#[tauri::command]
 async fn async_resize_pty(rows: u16, cols: u16, state: State<'_, AppState>) -> Result<(), String> {
     state
         .pty_pair
@@ -150,14 +129,40 @@ fn main() {
         .manage(AppState {
             pty_pair: Arc::new(AsyncMutex::new(pty_pair)),
             writer: Arc::new(AsyncMutex::new(writer)),
-            reader: Arc::new(AsyncMutex::new(BufReader::new(reader))),
-            utf8_remainder: Arc::new(AsyncMutex::new(Vec::new())),
+        })
+        .setup(move |app| {
+            let window = app.get_webview_window("main").ok_or("missing main window")?;
+            let window_for_thread = window.clone();
+
+            thread::spawn(move || {
+                let mut reader = BufReader::new(reader);
+                let mut utf8_remainder: Vec<u8> = Vec::new();
+                let mut buf = vec![0u8; 8192];
+
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            utf8_remainder.extend_from_slice(&buf[..n]);
+                            let output = decode_utf8_stream(&mut utf8_remainder);
+                            if !output.is_empty() {
+                                let _ = window_for_thread.emit("pty:data", output);
+                            }
+                        }
+                        Err(err) => {
+                            let _ = window_for_thread.emit("pty:error", err.to_string());
+                            break;
+                        }
+                    }
+                }
+            });
+
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             async_write_to_pty,
             async_resize_pty,
-            async_create_shell,
-            async_read_from_pty
+            async_create_shell
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

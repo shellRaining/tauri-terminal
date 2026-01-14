@@ -2,6 +2,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 const terminalElement = document.getElementById("terminal") as HTMLElement;
 
@@ -50,21 +51,16 @@ term.onData(writeToPty);
 addEventListener("resize", fitTerminal);
 fitTerminal();
 
-async function readFromPty() {
-  let data: string | null = null;
-  try {
-    data = await invoke<string>("async_read_from_pty");
-  } catch (error) {
-    console.error("Error reading from pty:", error);
-    window.requestAnimationFrame(readFromPty);
-    return;
+listen<string>("pty:data", async (event) => {
+  if (event.payload) {
+    await writeToTerminal(event.payload);
   }
+}).catch((error) => {
+  console.error("Error listening to pty:data:", error);
+});
 
-  if (data) {
-    await writeToTerminal(data);
-  }
-
-  window.requestAnimationFrame(readFromPty);
-}
-
-window.requestAnimationFrame(readFromPty);
+listen<string>("pty:error", (event) => {
+  console.error("PTY error:", event.payload);
+}).catch((error) => {
+  console.error("Error listening to pty:error:", error);
+});
