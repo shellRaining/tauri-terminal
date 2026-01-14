@@ -1,6 +1,6 @@
-import { Terminal } from "xterm";
-import { FitAddon } from "xterm-addon-fit";
-import "xterm/css/xterm.css";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 import { invoke } from "@tauri-apps/api/core";
 
 const terminalElement = document.getElementById("terminal") as HTMLElement;
@@ -37,6 +37,7 @@ function writeToPty(data: string) {
     data,
   });
 }
+
 function initShell() {
   invoke("async_create_shell").catch((error) => {
     // on linux it seem to to "Operation not permitted (os error 1)" but it still works because echo $SHELL give /bin/bash
