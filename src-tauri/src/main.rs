@@ -109,6 +109,7 @@ fn main() {
     let writer = pty_pair.master.take_writer().unwrap();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .manage(AppState {
             pty_pair: Arc::new(AsyncMutex::new(pty_pair)),
             writer: Arc::new(AsyncMutex::new(writer)),
